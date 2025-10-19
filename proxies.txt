@@ -1,0 +1,37 @@
+# Proxy List - One proxy per line
+# 
+# Supported formats:
+# - ip:port
+# - http://ip:port
+# - http://username:password@ip:port
+# - socks5://ip:port
+#
+# Lines starting with # are comments and will be ignored
+# Empty lines are also ignored
+#
+# Example proxies (REPLACE WITH YOUR OWN WORKING PROXIES):
+
+# Free proxies (usually unreliable - for testing only)
+# 192.168.1.1:8080
+# 10.0.0.1:3128
+
+# HTTP proxies
+# http://proxy1.example.com:8080
+# http://proxy2.example.com:8080
+
+# Authenticated proxies
+# http://username:password@premium-proxy.example.com:8080
+
+# SOCKS5 proxies
+# socks5://socks-proxy.example.com:1080
+
+# Instructions:
+# 1. Get proxies from a reliable proxy provider
+# 2. Add them below (one per line)
+# 3. Remove the # comment symbols
+# 4. Save this file
+# 5. Run the bot and choose to load proxies from this file
+
+# Add your proxies below:
+
+
