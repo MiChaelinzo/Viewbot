@@ -1,8 +1,20 @@
-import undetected_chromedriver as uc
-import time
+import os
+import platform
 import random
+import time
 from datetime import datetime
-from urllib.parse import urlparse
+
+try:
+    import undetected_chromedriver as uc
+except ImportError:  # pragma: no cover
+    uc = None
+
+try:
+    from selenium import webdriver
+    from selenium.webdriver.chrome.service import Service
+except ImportError:  # pragma: no cover
+    webdriver = None
+    Service = None
 
 
 class MultiPlatformViewBot:
@@ -26,6 +38,44 @@ class MultiPlatformViewBot:
         self.rotate_proxy_each_session = rotate_proxy_each_session
         self.current_proxy_index = 0
         self.driver = None
+        self.use_arm_chromium = self._should_use_arm_chromium()
+
+    def _should_use_arm_chromium(self):
+        """Use system Chromium + chromedriver on ARM devices like Raspberry Pi 4/5."""
+        machine = platform.machine().lower()
+        if machine not in {"aarch64", "armv7l", "armv6l"}:
+            return False
+
+        return self._find_chromium_binary() is not None and self._find_chromedriver_binary() is not None
+
+    def _find_chromium_binary(self):
+        """Find a Chromium/Chrome binary installed on the system."""
+        candidates = [
+            "/usr/bin/chromium",
+            "/usr/bin/chromium-browser",
+            "/usr/bin/google-chrome",
+            "/usr/bin/google-chrome-stable",
+            "/opt/google/chrome/chrome",
+        ]
+
+        for path in candidates:
+            if os.path.exists(path):
+                return path
+        return None
+
+    def _find_chromedriver_binary(self):
+        """Find a matching chromedriver binary for the system."""
+        candidates = [
+            "/usr/bin/chromedriver",
+            "/usr/local/bin/chromedriver",
+            "/usr/lib/chromium-browser/chromedriver",
+            "/usr/lib/chromium/chromedriver",
+        ]
+
+        for path in candidates:
+            if os.path.exists(path):
+                return path
+        return None
 
     def get_next_proxy(self):
         """
@@ -49,11 +99,45 @@ class MultiPlatformViewBot:
 
     def setup_driver(self, proxy=None):
         """
-        Setup undetected Chrome driver with options
+        Setup a browser driver with options.
 
-        Args:
-            proxy (str): Proxy server in format 'http://ip:port' or 'http://user:pass@ip:port'
+        On ARM-based systems such as Raspberry Pi, prefer the system Chromium + chromedriver
+        because undetected_chromedriver may download an incompatible x86 executable.
         """
+        if self.use_arm_chromium and webdriver is not None and Service is not None:
+            options = webdriver.ChromeOptions()
+            chrome_binary = self._find_chromium_binary()
+            if chrome_binary:
+                options.binary_location = chrome_binary
+
+            options.add_argument('--disable-blink-features=AutomationControlled')
+            options.add_argument('--start-maximized')
+            options.add_argument('--disable-dev-shm-usage')
+            options.add_argument('--no-sandbox')
+            options.add_argument('--disable-gpu')
+            options.add_argument('--window-size=1920,1080')
+
+            if proxy:
+                print(f"[*] Using proxy: {self._mask_proxy(proxy)}")
+                if '@' in proxy:
+                    options.add_argument(f'--proxy-server={proxy}')
+                else:
+                    if not proxy.startswith('http'):
+                        proxy = f'http://{proxy}'
+                    options.add_argument(f'--proxy-server={proxy}')
+
+            chromedriver_path = self._find_chromedriver_binary()
+            service = Service(executable_path=chromedriver_path) if chromedriver_path else Service()
+            self.driver = webdriver.Chrome(service=service, options=options)
+            self.driver.set_page_load_timeout(30)
+            return
+
+        if uc is None:
+            raise RuntimeError(
+                "Neither undetected_chromedriver nor Selenium Chrome support is available. "
+                "Install 'undetected-chromedriver' or 'chromium/chromium-driver' on this system."
+            )
+
         options = uc.ChromeOptions()
 
         # Add arguments to make the browser appear more human-like
@@ -68,24 +152,18 @@ class MultiPlatformViewBot:
 
             # Handle different proxy formats
             if '@' in proxy:
-                # Format: http://user:pass@ip:port
                 options.add_argument(f'--proxy-server={proxy}')
             else:
-                # Format: http://ip:port or ip:port
                 if not proxy.startswith('http'):
                     proxy = f'http://{proxy}'
                 options.add_argument(f'--proxy-server={proxy}')
 
-        # Use undetected-chromedriver to avoid detection
         self.driver = uc.Chrome(options=options)
-
-        # Set reasonable timeouts
         self.driver.set_page_load_timeout(30)
 
     def _mask_proxy(self, proxy):
         """Mask proxy credentials for display"""
         if '@' in proxy:
-            # Hide credentials
             parts = proxy.split('@')
             return f"***:***@{parts[1]}"
         return proxy
@@ -156,7 +234,6 @@ class MultiPlatformViewBot:
                 time.sleep(random.uniform(1, 2))
 
             # Find video links on the page
-            # TikTok structure may vary, so we try multiple selectors
             selectors = [
                 "a[href*='/video/']",
                 "div[data-e2e='user-post-item'] a",
@@ -166,7 +243,7 @@ class MultiPlatformViewBot:
             for selector in selectors:
                 try:
                     elements = self.driver.find_elements("css selector", selector)
-                    for elem in elements[:10]:  # Get up to 10 videos
+                    for elem in elements[:10]:
                         href = elem.get_attribute('href')
                         if href and '/video/' in href and href not in videos:
                             videos.append(href)
@@ -177,7 +254,7 @@ class MultiPlatformViewBot:
         except Exception as e:
             print(f"[!] Error finding TikTok videos: {str(e)}")
 
-        return videos[:5]  # Return max 5 videos
+        return videos[:5]
 
     def watch_genfeed_session(self, start_url):
         """Open a Genfeed page or homepage and play the video-like content for a realistic duration."""
@@ -187,7 +264,6 @@ class MultiPlatformViewBot:
             self.driver.get(start_url)
             time.sleep(random.uniform(3, 6))
 
-            # If the user gave the homepage, try to pick one of the first video links available there.
             if 'genfeed.co/' in start_url and '/video/' not in start_url:
                 candidates = []
                 for selector in ["a[href*='/video/']", "a[href*='video']", "video"]:
@@ -203,14 +279,12 @@ class MultiPlatformViewBot:
                         continue
 
                 if candidates:
-                    # Use the first discovered video URL instead of just staying on the homepage.
                     next_url = candidates[0]
                     if next_url != start_url:
                         print(f"[*] Found Genfeed video candidate: {next_url}")
                         self.driver.get(next_url)
                         time.sleep(random.uniform(2, 4))
 
-            # Try the generic approach regardless of the URL: if there is a <video> element, play it.
             try:
                 self.driver.execute_script("""
                     const video = document.querySelector('video');
@@ -225,7 +299,6 @@ class MultiPlatformViewBot:
 
             self.watch_content('genfeed', watch_duration_range=(20, 60))
 
-            # Random scroll content to make it more organic
             if random.random() > 0.5:
                 self.driver.execute_script("window.scrollBy(0, 400);")
                 time.sleep(random.uniform(1, 3))
@@ -244,11 +317,9 @@ class MultiPlatformViewBot:
         print(f"\n[TikTok] Starting TikTok session from: {start_url}")
 
         try:
-            # Navigate to the TikTok URL
             self.driver.get(start_url)
             time.sleep(random.uniform(4, 7))
 
-            # Check if it's a creator page or single video
             is_creator_page = '/@' in start_url and '/video/' not in start_url
 
             if is_creator_page:
@@ -256,7 +327,6 @@ class MultiPlatformViewBot:
                 video_urls = self.get_tiktok_creator_videos()
 
                 if video_urls:
-                    # Watch random selection of creator's videos
                     videos_to_watch = random.randint(video_count_range[0], min(video_count_range[1], len(video_urls)))
                     selected_videos = random.sample(video_urls, min(videos_to_watch, len(video_urls)))
 
@@ -266,15 +336,12 @@ class MultiPlatformViewBot:
                         time.sleep(random.uniform(2, 4))
                         self.watch_content('tiktok', watch_duration_range=(15, 45))
 
-                        # Random chance to scroll comments
                         if random.random() > 0.5:
                             self.driver.execute_script("window.scrollBy(0, 400);")
                             time.sleep(random.uniform(1, 3))
                 else:
-                    # If no videos found, just watch the creator page
                     self.watch_content('tiktok', watch_duration_range=(20, 40))
             else:
-                # Single video - just watch it
                 print("[*] Watching single TikTok video")
                 self.watch_content('tiktok', watch_duration_range=(20, 50))
 
@@ -289,15 +356,10 @@ class MultiPlatformViewBot:
             self.driver.get(self.youtube_url)
             time.sleep(random.uniform(3, 6))
 
-            # Try to skip ads
             self.skip_youtube_ad()
-
-            # Watch the video
             self.watch_content('youtube', watch_duration_range=(30, 90))
 
-            # Random engagement actions
             if random.random() > 0.7:
-                # Scroll to comments
                 self.driver.execute_script("window.scrollTo(0, 600);")
                 time.sleep(random.uniform(2, 4))
 
@@ -334,7 +396,6 @@ class MultiPlatformViewBot:
             print("Multi-Platform View Bot (YouTube + TikTok + Genfeed)")
             print("=" * 60)
 
-            # Display configuration
             if self.youtube_url:
                 print(f"YouTube URL: {self.youtube_url}")
             if self.tiktok_url:
@@ -343,7 +404,6 @@ class MultiPlatformViewBot:
                 print(f"Genfeed URL: {self.genfeed_url}")
             print(f"Session Count: {self.session_count}")
 
-            # Display proxy configuration
             if self.proxy_list:
                 print(f"Proxy Rotation: Enabled ({len(self.proxy_list)} proxies)")
                 print(f"Rotation Mode: {'Sequential' if self.rotate_proxy_each_session else 'Random'}")
@@ -352,18 +412,19 @@ class MultiPlatformViewBot:
 
             print("=" * 60)
 
-            # Validate that at least one URL is provided
             if not self.youtube_url and not self.tiktok_url and not self.genfeed_url:
                 print("[!] Error: Please provide at least one URL (YouTube, TikTok, or Genfeed)")
                 return
 
-            # Setup the driver with initial proxy
+            if self.use_arm_chromium:
+                print("[*] Raspberry Pi ARM detected: using system Chromium + chromedriver")
+            else:
+                print("[*] Using undetected_chromedriver")
+
             print("\n[*] Setting up Chrome driver...")
             initial_proxy = self.get_next_proxy() if self.proxy_list else None
             self.setup_driver(proxy=initial_proxy)
 
-            # Create browsing pattern
-            # Mix of both platforms if multiple are provided
             platforms_available = []
             if self.youtube_url:
                 platforms_available.append('youtube')
@@ -372,22 +433,18 @@ class MultiPlatformViewBot:
             if self.genfeed_url:
                 platforms_available.append('genfeed')
 
-            # Main browsing loop
             for i in range(self.session_count):
                 print(f"\n{'='*60}")
                 print(f"Session {i + 1}/{self.session_count}")
                 print(f"{'='*60}")
 
-                # Rotate proxy for each session (except first)
                 if self.proxy_list and i > 0:
                     print("[*] Rotating to new proxy...")
                     self.restart_driver_with_new_proxy()
 
-                # Decide which platform to visit
                 if len(platforms_available) == 1:
                     platform = platforms_available[0]
                 else:
-                    # Weighted selection: YouTube first, TikTok second, Genfeed third.
                     weights = [0.5, 0.3, 0.2]
                     if self.youtube_url and not self.tiktok_url and not self.genfeed_url:
                         platform = 'youtube'
@@ -400,7 +457,6 @@ class MultiPlatformViewBot:
 
                 print(f"[*] Selected platform: {platform.upper()}")
 
-                # Visit the selected platform
                 if platform == 'youtube':
                     self.watch_youtube_video()
                 elif platform == 'tiktok':
@@ -408,7 +464,6 @@ class MultiPlatformViewBot:
                 elif platform == 'genfeed':
                     self.watch_genfeed_session(self.genfeed_url)
 
-                # Add break between sessions (except last one)
                 if i < self.session_count - 1:
                     break_time = random.uniform(5, 15)
                     print(f"\n[*] Taking a {break_time:.1f}s break before next session...")
@@ -419,7 +474,6 @@ class MultiPlatformViewBot:
             print("=" * 60)
             print("\n[*] Keeping browser open. Press Ctrl+C to close...")
 
-            # Keep the browser open
             while True:
                 time.sleep(1)
 
@@ -450,7 +504,6 @@ def load_proxies_from_file(filepath):
 
 
 if __name__ == "__main__":
-    # Example usage
     print("\n" + "=" * 60)
     print("Multi-Platform View Bot - Experimental Tool")
     print("=" * 60)
@@ -458,28 +511,22 @@ if __name__ == "__main__":
     print("Artificial view generation violates platform Terms of Service.")
     print("=" * 60 + "\n")
 
-    # Get YouTube URL from user
     print("Enter URLs (leave blank to skip a platform):\n")
     youtube_url = input("YouTube video URL: ").strip()
 
-    # Validate YouTube URL if provided
     if youtube_url and "youtube.com" not in youtube_url and "youtu.be" not in youtube_url:
         print("[!] Invalid YouTube URL. Please provide a valid YouTube video link.")
         exit(1)
 
-    # Get TikTok URL from user
     tiktok_url = input("TikTok URL (video or creator profile like @username): ").strip()
 
-    # Validate TikTok URL if provided
     if tiktok_url:
-        # If user entered just @username, convert to full URL
         if tiktok_url.startswith('@'):
             tiktok_url = f"https://www.tiktok.com/{tiktok_url}"
         elif "tiktok.com" not in tiktok_url:
             print("[!] Invalid TikTok URL. Please provide a valid TikTok link or @username.")
             exit(1)
 
-    # Get Genfeed URL from user
     genfeed_url = input("Genfeed URL (video page or homepage): ").strip()
     if genfeed_url:
         if genfeed_url.startswith('@'):
@@ -488,12 +535,10 @@ if __name__ == "__main__":
             print("[!] Invalid Genfeed URL. Please provide a valid Genfeed link.")
             exit(1)
 
-    # Check if at least one URL is provided
     if not youtube_url and not tiktok_url and not genfeed_url:
         print("[!] Error: Please provide at least one URL (YouTube, TikTok, or Genfeed)")
         exit(1)
 
-    # Proxy configuration
     print("\n" + "=" * 60)
     print("Proxy Configuration (Optional)")
     print("=" * 60)
@@ -532,7 +577,6 @@ if __name__ == "__main__":
         else:
             print("[!] Invalid choice. Continuing without proxies.")
 
-    # Get session count
     try:
         session_count = int(input("\nEnter number of browsing sessions (default 10): ").strip() or "10")
     except ValueError:
@@ -567,13 +611,12 @@ if __name__ == "__main__":
         print("[*] Cancelled by user")
         exit(0)
 
-    # Create and run the bot
     bot = MultiPlatformViewBot(
         youtube_url=youtube_url if youtube_url else None,
         tiktok_url=tiktok_url if tiktok_url else None,
         genfeed_url=genfeed_url if genfeed_url else None,
         session_count=session_count,
         proxy_list=proxy_list if proxy_list else None,
-        rotate_proxy_each_session=True  # Sequential rotation by default
+        rotate_proxy_each_session=True
     )
     bot.run()
